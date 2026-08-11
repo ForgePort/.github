@@ -1,0 +1,38 @@
+# SPDX-FileCopyrightText: 2026 Alexander Plate
+# SPDX-License-Identifier: BUSL-1.1
+
+name: Fehler melden
+description: Reproduzierbares fehlerhaftes Verhalten melden
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: "Keine Sicherheitslücken oder Geheimnisse eintragen. Dafür SECURITY.md verwenden."
+  - type: input
+    id: version
+    attributes:
+      label: Betroffene Version
+      placeholder: v0.0.1 oder Commit-SHA
+    validations: { required: true }
+  - type: textarea
+    id: description
+    attributes:
+      label: Beschreibung
+      description: Erwartetes und tatsächliches Verhalten
+    validations: { required: true }
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Reproduktion
+      description: Minimale, bereinigte Schritte ohne Geheimnisse oder Kundendaten
+    validations: { required: true }
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Bestätigung
+      options:
+        - label: Ich habe bestehende Issues geprüft.
+          required: true
+        - label: Diese Meldung enthält keine Sicherheitslücke, Geheimnisse oder Kundendaten.
+          required: true

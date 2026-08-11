@@ -1,0 +1,32 @@
+# SPDX-FileCopyrightText: 2026 Alexander Plate
+# SPDX-License-Identifier: BUSL-1.1
+
+name: Änderung vorschlagen
+description: Problem und gewünschten Nutzen beschreiben
+title: "[Proposal]: "
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: Welches konkrete Problem soll gelöst werden?
+    validations: { required: true }
+  - type: textarea
+    id: outcome
+    attributes:
+      label: Gewünschtes Ergebnis
+      description: Beschreibe Verhalten und Nutzen, nicht nur eine Implementierung.
+    validations: { required: true }
+  - type: textarea
+    id: impacts
+    attributes:
+      label: Alternativen und Auswirkungen
+      description: Betroffene Repositories, Verträge, Sicherheit oder Lizenzen
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Bestätigung
+      options:
+        - label: Der Vorschlag enthält keine Geheimnisse oder Kundendaten.
+          required: true

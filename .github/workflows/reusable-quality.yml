@@ -1,0 +1,48 @@
+# SPDX-FileCopyrightText: 2026 Alexander Plate
+# SPDX-License-Identifier: BUSL-1.1
+
+name: Reusable quality checks
+on:
+  workflow_call:
+    inputs:
+      test-command: { required: true, type: string }
+      lint-command: { required: true, type: string }
+      working-directory: { required: false, default: ".", type: string }
+      java-version: { required: false, default: "", type: string }
+      node-version: { required: false, default: "", type: string }
+      go-version: { required: false, default: "", type: string }
+permissions:
+  contents: read
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # main 2026-08-11
+        with: { persist-credentials: false }
+      - if: inputs.java-version != ''
+        uses: actions/setup-java@d2bb5a81bf6132351ee9adcc0bba8261a8d34d48 # main 2026-08-11
+        with:
+          distribution: temurin
+          java-version: ${{ inputs.java-version }}
+      - if: inputs.node-version != ''
+        uses: actions/setup-node@e51e5fe84fc33b4c73ebe40526b2694712b5b858 # main 2026-08-11
+        with:
+          node-version: ${{ inputs.node-version }}
+      - if: inputs.go-version != ''
+        uses: actions/setup-go@5064d95ba18d4a9dda7c4cc67adeb03aea1a2a14 # main 2026-08-11
+        with:
+          go-version: ${{ inputs.go-version }}
+          cache: true
+      - name: Lint
+        shell: bash
+        working-directory: ${{ inputs.working-directory }}
+        env:
+          LINT_COMMAND: ${{ inputs.lint-command }}
+        run: bash -euo pipefail -c "$LINT_COMMAND"
+      - name: Test
+        shell: bash
+        working-directory: ${{ inputs.working-directory }}
+        env:
+          TEST_COMMAND: ${{ inputs.test-command }}
+        run: bash -euo pipefail -c "$TEST_COMMAND"

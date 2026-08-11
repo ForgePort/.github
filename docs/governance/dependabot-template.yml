@@ -1,0 +1,63 @@
+# SPDX-FileCopyrightText: 2026 Alexander Plate
+# SPDX-License-Identifier: BUSL-1.1
+
+# Als .github/dependabot.yml übernehmen, Verzeichnisse anpassen und nicht
+# vorhandene Ökosysteme entfernen. Major-Updates bleiben einzelne PRs.
+version: 2
+updates:
+  - package-ecosystem: maven
+    directory: /
+    schedule: { interval: weekly }
+    cooldown: { default-days: 7 }
+    groups:
+      maven-patch-minor:
+        applies-to: version-updates
+        update-types: [minor, patch]
+  - package-ecosystem: npm
+    directory: /
+    schedule: { interval: weekly }
+    cooldown: { default-days: 7 }
+    groups:
+      npm-patch-minor:
+        applies-to: version-updates
+        update-types: [minor, patch]
+  - package-ecosystem: gomod
+    directory: /
+    schedule: { interval: weekly }
+    cooldown: { default-days: 7 }
+    groups:
+      go-patch-minor:
+        applies-to: version-updates
+        update-types: [minor, patch]
+  - package-ecosystem: github-actions
+    directory: /
+    schedule: { interval: weekly }
+    cooldown: { default-days: 7 }
+    groups:
+      actions-patch-minor:
+        applies-to: version-updates
+        update-types: [minor, patch]
+  - package-ecosystem: docker
+    directories: ["/", "/container"]
+    schedule: { interval: weekly }
+    cooldown: { default-days: 7 }
+    groups:
+      container-patch-minor:
+        applies-to: version-updates
+        update-types: [minor, patch]
+  - package-ecosystem: docker
+    directory: /charts
+    schedule: { interval: weekly }
+    cooldown: { default-days: 7 }
+    groups:
+      helm-container-patch-minor:
+        applies-to: version-updates
+        update-types: [minor, patch]
+  - package-ecosystem: helm
+    directory: /charts
+    schedule: { interval: weekly }
+    cooldown: { default-days: 7 }
+    groups:
+      helm-patch-minor:
+        applies-to: version-updates
+        update-types: [minor, patch]

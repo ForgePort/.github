@@ -1,0 +1,72 @@
+# SPDX-FileCopyrightText: 2026 Alexander Plate
+# SPDX-License-Identifier: BUSL-1.1
+
+name: Reusable security and supply-chain checks
+on:
+  workflow_call:
+    inputs:
+      scan-path: { required: false, default: ".", type: string }
+      notices-path: { required: false, default: "THIRD_PARTY_NOTICES.md", type: string }
+permissions:
+  contents: read
+jobs:
+  secret-scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # main 2026-08-11
+        with:
+          persist-credentials: false
+      - name: Scan checked-out files for secrets
+        uses: aquasecurity/trivy-action@2736533278103862a861f4a35ebac3e97854d956 # main 2026-08-11
+        with:
+          scan-type: fs
+          scan-ref: ${{ inputs.scan-path }}
+          scanners: secret
+          format: table
+          exit-code: "1"
+  inventory-and-scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # main 2026-08-11
+        with: { persist-credentials: false }
+      - name: Generate SPDX SBOM and license inventory
+        uses: anchore/sbom-action@04151451f829cb881fd7b3250eccf4021433e14e # main 2026-08-11
+        with:
+          path: ${{ inputs.scan-path }}
+          format: spdx-json
+          output-file: sbom.spdx.json
+          upload-artifact: false
+      - name: Preserve repository notices
+        shell: bash
+        env:
+          NOTICES_PATH: ${{ inputs.notices-path }}
+        run: |
+          if [[ -e "$NOTICES_PATH" ]]; then
+            cp -R "$NOTICES_PATH" third-party-notices
+          else
+            echo "Repository-maintained notices are required." >&2
+            exit 1
+          fi
+      - name: Vulnerability scan
+        uses: aquasecurity/trivy-action@2736533278103862a861f4a35ebac3e97854d956 # main 2026-08-11
+        with:
+          scan-type: fs
+          scan-ref: ${{ inputs.scan-path }}
+          format: sarif
+          output: trivy.sarif
+          severity: HIGH,CRITICAL
+          ignore-unfixed: false
+          exit-code: "1"
+      - name: Upload evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # main 2026-08-11
+        with:
+          name: supply-chain-evidence
+          path: |
+            sbom.spdx.json
+            third-party-notices*
+            trivy.sarif
+          if-no-files-found: error
+          retention-days: 14

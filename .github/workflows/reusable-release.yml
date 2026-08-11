@@ -1,0 +1,121 @@
+# SPDX-FileCopyrightText: 2026 Alexander Plate
+# SPDX-License-Identifier: BUSL-1.1
+
+name: Reusable GitHub release
+on:
+  workflow_call:
+    inputs:
+      artifact-name: { required: true, type: string }
+      artifact-path: { required: false, default: "release-artifacts", type: string }
+      license-path: { required: false, default: "LICENSE", type: string }
+      first-publication-date: { required: true, type: string }
+      packaged-license-path: { required: false, default: "LICENSE", type: string }
+      packaged-version-path: { required: false, default: "VERSION", type: string }
+      packaged-notices-path: { required: false, default: "THIRD_PARTY_NOTICES.md", type: string }
+      packaged-sbom-path: { required: false, default: "sbom.spdx.json", type: string }
+permissions:
+  contents: read
+jobs:
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: release
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # main 2026-08-11
+        with: { persist-credentials: false }
+      - name: Validate isolated artifact destination
+        shell: python
+        env:
+          ARTIFACT_PATH: ${{ inputs.artifact-path }}
+        run: |
+          import os, pathlib
+          workspace = pathlib.Path(".").resolve()
+          artifact_root = pathlib.Path(os.environ["ARTIFACT_PATH"]).resolve()
+          if artifact_root == workspace or workspace not in artifact_root.parents:
+              raise SystemExit("artifact path must be a dedicated workspace subdirectory")
+      - uses: actions/download-artifact@484a0b528fb4d7bd804637ccb632e47a0e638317 # main 2026-08-11
+        with:
+          name: ${{ inputs.artifact-name }}
+          path: ${{ inputs.artifact-path }}
+      - name: Enforce release evidence and BSL gate
+        shell: python
+        env:
+          ROOT: ${{ inputs.artifact-path }}
+          LICENSE_PATH: ${{ inputs.license-path }}
+          EXPECTED_PUBLICATION: ${{ inputs.first-publication-date }}
+          PACKAGED_LICENSE_PATH: ${{ inputs.packaged-license-path }}
+          PACKAGED_VERSION_PATH: ${{ inputs.packaged-version-path }}
+          PACKAGED_NOTICES_PATH: ${{ inputs.packaged-notices-path }}
+          PACKAGED_SBOM_PATH: ${{ inputs.packaged-sbom-path }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          import datetime, json, os, pathlib, re
+          m = re.fullmatch(r"v((0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*))", os.environ["TAG"])
+          if not m: raise SystemExit("invalid release tag")
+          workspace = pathlib.Path(".").resolve()
+          source_license = pathlib.Path(os.environ["LICENSE_PATH"]).resolve()
+          if workspace not in source_license.parents or ".git" in source_license.relative_to(workspace).parts:
+              raise SystemExit("license path must stay inside the checked-out repository")
+          forbidden = ("CHANGE-DATE-" + "SET-AT-FIRST-PUBLICATION", "FIRST-PUBLICATION-" + "DATE-SET-AT-RELEASE", "(" + "unreleased)")
+          artifact_root = pathlib.Path(os.environ["ROOT"]).resolve()
+          workspace = pathlib.Path(".").resolve()
+          if artifact_root == workspace or workspace not in artifact_root.parents:
+              raise SystemExit("artifact path must be a dedicated workspace subdirectory")
+          roots = (pathlib.Path("."), artifact_root)
+          for root in roots:
+              for path in root.rglob("*"):
+                  if path.is_file() and ".git" not in path.parts:
+                      try: text = path.read_text(encoding="utf-8")
+                      except UnicodeDecodeError: continue
+                      if any(x in text for x in forbidden): raise SystemExit(f"release blocker in {path}")
+          text = source_license.read_text(encoding="utf-8")
+          if not re.search(rf"(?m)^Licensed Work: .+?{re.escape(m.group(1))}$", text): raise SystemExit("license version mismatch")
+          first = datetime.date.fromisoformat(re.search(r"(?m)^First Public Publication: (\d{4}-\d{2}-\d{2})$", text).group(1))
+          change = datetime.date.fromisoformat(re.search(r"(?m)^Change Date: (\d{4}-\d{2}-\d{2})$", text).group(1))
+          expected = datetime.date.fromisoformat(os.environ["EXPECTED_PUBLICATION"])
+          if first != expected: raise SystemExit("source publication date does not match release input")
+          try:
+              expected_change = first.replace(year=first.year + 4)
+          except ValueError as exc:
+              raise SystemExit("four-year calendar date does not exist") from exc
+          if change != expected_change: raise SystemExit("invalid Change Date")
+          packaged_license = (artifact_root / os.environ["PACKAGED_LICENSE_PATH"]).resolve()
+          packaged_version = (artifact_root / os.environ["PACKAGED_VERSION_PATH"]).resolve()
+          packaged_notices = (artifact_root / os.environ["PACKAGED_NOTICES_PATH"]).resolve()
+          packaged_sbom = (artifact_root / os.environ["PACKAGED_SBOM_PATH"]).resolve()
+          packaged_paths = (packaged_license, packaged_version, packaged_notices, packaged_sbom)
+          if any(artifact_root not in path.parents for path in packaged_paths):
+              raise SystemExit("packaged paths must stay below artifact path")
+          if packaged_license.read_bytes() != source_license.read_bytes():
+              raise SystemExit("packaged LICENSE differs from source LICENSE")
+          if packaged_version.read_text(encoding="utf-8").strip() != m.group(1):
+              raise SystemExit("packaged VERSION differs from release tag")
+          if not packaged_notices.is_file() or packaged_notices.stat().st_size == 0:
+              raise SystemExit("packaged third-party notices are missing or empty")
+          sbom = json.loads(packaged_sbom.read_text(encoding="utf-8"))
+          if not str(sbom.get("spdxVersion", "")).startswith("SPDX-"):
+              raise SystemExit("packaged SBOM is not SPDX JSON")
+          files = [p for p in artifact_root.rglob("*") if p.is_file()]
+          names = [p.name.lower() for p in files]
+          if not any("sbom" in n for n in names): raise SystemExit("SBOM missing")
+          if not any("notice" in n for n in names): raise SystemExit("Notices missing")
+      - name: Generate checksums
+        shell: bash
+        env:
+          ROOT: ${{ inputs.artifact-path }}
+        run: |
+          checksum_tmp="$(mktemp)"
+          find "$ROOT" -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum > "$checksum_tmp"
+          mv "$checksum_tmp" "$ROOT/SHA256SUMS"
+      - name: Publish release assets
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ROOT: ${{ inputs.artifact-path }}
+        run: |
+          mapfile -d '' assets < <(find "$ROOT" -type f -print0)
+          (("${#assets[@]}" > 0)) || { echo "No release assets"; exit 1; }
+          gh release create "$GITHUB_REF_NAME" "${assets[@]}" --verify-tag --generate-notes

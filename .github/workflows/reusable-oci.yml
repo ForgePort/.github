@@ -1,0 +1,187 @@
+# SPDX-FileCopyrightText: 2026 Alexander Plate
+# SPDX-License-Identifier: BUSL-1.1
+
+name: Reusable OCI build, sign and attest
+on:
+  workflow_call:
+    inputs:
+      image-name: { required: true, type: string }
+      context: { required: false, default: ".", type: string }
+      containerfile: { required: false, default: "./Containerfile", type: string }
+      license-path: { required: false, default: "LICENSE", type: string }
+      first-publication-date: { required: true, type: string }
+      oci-license-expression: { required: false, default: "BUSL-1.1", type: string }
+      enable-github-attestation: { required: false, default: false, type: boolean }
+    outputs:
+      digest:
+        value: ${{ jobs.publish.outputs.digest }}
+permissions:
+  contents: read
+jobs:
+  publish:
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    environment: release
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
+    steps:
+      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # main 2026-08-11
+        with: { persist-credentials: false }
+      - name: Enforce release-ready BSL source
+        shell: python
+        env:
+          LICENSE_PATH: ${{ inputs.license-path }}
+          EXPECTED_PUBLICATION: ${{ inputs.first-publication-date }}
+          TAG: ${{ github.ref_name }}
+          IMAGE: ${{ inputs.image-name }}
+        run: |
+          import datetime, os, pathlib, re
+          m = re.fullmatch(r"v((0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*))", os.environ["TAG"])
+          if not m:
+              raise SystemExit("invalid release tag")
+          if not re.fullmatch(r"ghcr\.io/forgeport/[a-z0-9][a-z0-9._/-]*", os.environ["IMAGE"]):
+              raise SystemExit("image name must stay below ghcr.io/forgeport")
+          workspace = pathlib.Path(".").resolve()
+          source_license = pathlib.Path(os.environ["LICENSE_PATH"]).resolve()
+          if workspace not in source_license.parents or ".git" in source_license.relative_to(workspace).parts:
+              raise SystemExit("license path must stay inside the checked-out repository")
+          forbidden = ("CHANGE-DATE-" + "SET-AT-FIRST-PUBLICATION", "FIRST-PUBLICATION-" + "DATE-SET-AT-RELEASE", "(" + "unreleased)")
+          for path in pathlib.Path(".").rglob("*"):
+              if path.is_file() and ".git" not in path.parts:
+                  try: text = path.read_text(encoding="utf-8")
+                  except UnicodeDecodeError: continue
+                  if any(x in text for x in forbidden): raise SystemExit(f"release blocker in {path}")
+          text = source_license.read_text(encoding="utf-8")
+          if not re.search(rf"(?m)^Licensed Work: .+?{re.escape(m.group(1))}$", text): raise SystemExit("license version mismatch")
+          first = datetime.date.fromisoformat(re.search(r"(?m)^First Public Publication: (\d{4}-\d{2}-\d{2})$", text).group(1))
+          change = datetime.date.fromisoformat(re.search(r"(?m)^Change Date: (\d{4}-\d{2}-\d{2})$", text).group(1))
+          expected = datetime.date.fromisoformat(os.environ["EXPECTED_PUBLICATION"])
+          if first != expected: raise SystemExit("source publication date does not match release input")
+          try:
+              expected_change = first.replace(year=first.year + 4)
+          except ValueError as exc:
+              raise SystemExit("four-year calendar date does not exist") from exc
+          if change != expected_change: raise SystemExit("invalid Change Date")
+      - id: license
+        name: Bind source license to OCI metadata
+        shell: bash
+        env:
+          LICENSE_PATH: ${{ inputs.license-path }}
+          FIRST_PUBLICATION: ${{ inputs.first-publication-date }}
+        run: |
+          printf 'sha256=%s\n' "$(sha256sum "$LICENSE_PATH" | cut -d ' ' -f 1)" >> "$GITHUB_OUTPUT"
+          printf 'first_publication=%s\n' "$FIRST_PUBLICATION" >> "$GITHUB_OUTPUT"
+      - uses: docker/setup-buildx-action@5b9cf3909b54a280b6df6eee035755eb1f2fd611 # main 2026-08-11
+      - uses: docker/login-action@eed250920367120910219051b8653a1d846f7f03 # main 2026-08-11
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      - id: metadata
+        uses: docker/metadata-action@703896b4f30f62d53f5530a80bcdc589a3f702bc # main 2026-08-11
+        with:
+          images: ${{ inputs.image-name }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=sha,prefix=sha-
+          labels: |
+            org.opencontainers.image.licenses=${{ inputs.oci-license-expression }}
+            org.forgeport.license.sha256=${{ steps.license.outputs.sha256 }}
+            org.forgeport.first-publication=${{ steps.license.outputs.first_publication }}
+      - id: build
+        uses: docker/build-push-action@2ca78c6bec76527009825f31aae0532b4d40d820 # main 2026-08-11
+        with:
+          context: ${{ inputs.context }}
+          file: ${{ inputs.containerfile }}
+          outputs: type=image,name=${{ inputs.image-name }},push-by-digest=true,name-canonical=true,push=true
+          labels: ${{ steps.metadata.outputs.labels }}
+          sbom: true
+          provenance: mode=max
+      - name: Scan immutable OCI digest
+        uses: aquasecurity/trivy-action@2736533278103862a861f4a35ebac3e97854d956 # main 2026-08-11
+        with:
+          scan-type: image
+          image-ref: ${{ inputs.image-name }}@${{ steps.build.outputs.digest }}
+          format: sarif
+          output: oci-trivy.sarif
+          severity: HIGH,CRITICAL
+          ignore-unfixed: false
+          exit-code: "1"
+      - name: Preserve OCI vulnerability result
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # main 2026-08-11
+        with:
+          name: oci-vulnerability-scan
+          path: oci-trivy.sarif
+          if-no-files-found: error
+          retention-days: 30
+      - uses: sigstore/cosign-installer@874852de93c66509b01dc7cd80f7a5385182d017 # main 2026-08-11
+      - name: Sign immutable digest
+        shell: bash
+        env:
+          IMAGE: ${{ inputs.image-name }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: cosign sign --yes "${IMAGE}@${DIGEST}"
+      - name: Create and attach portable SLSA provenance
+        shell: bash
+        env:
+          IMAGE: ${{ inputs.image-name }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          jq -n --arg repository "$GITHUB_REPOSITORY" --arg sha "$GITHUB_SHA" --arg run "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" \
+            '{buildDefinition:{buildType:"https://github.com/ForgePort/.github/reusable-oci/v1",externalParameters:{repository:$repository,revision:$sha},internalParameters:{},resolvedDependencies:[]},runDetails:{builder:{id:"https://github.com/actions/runner"},metadata:{invocationId:$run},byproducts:[]}}' > provenance.slsa.json
+          cosign attest --yes --type slsaprovenance --predicate provenance.slsa.json "${IMAGE}@${DIGEST}"
+      - name: Promote verified digest to release tags
+        shell: bash
+        env:
+          IMAGE: ${{ inputs.image-name }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+          TAGS: ${{ steps.metadata.outputs.tags }}
+        run: |
+          while IFS= read -r tag; do
+            [[ -n "$tag" ]] || continue
+            [[ "$tag" == "$IMAGE":* ]] || { echo "Unexpected image tag: $tag"; exit 1; }
+            docker buildx imagetools create --tag "$tag" "${IMAGE}@${DIGEST}"
+          done <<< "$TAGS"
+      - name: Record immutable evidence
+        shell: bash
+        env:
+          IMAGE: ${{ inputs.image-name }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+          LICENSE_PATH: ${{ inputs.license-path }}
+        run: |
+          printf '%s@%s\n' "$IMAGE" "$DIGEST" > oci-digest.txt
+          cp "$LICENSE_PATH" oci-LICENSE
+          sha256sum provenance.slsa.json oci-digest.txt oci-LICENSE > oci-checksums.sha256
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # main 2026-08-11
+        with:
+          name: oci-release-evidence
+          path: |
+            oci-digest.txt
+            provenance.slsa.json
+            oci-LICENSE
+            oci-checksums.sha256
+          if-no-files-found: error
+          retention-days: 30
+
+  github-attestation:
+    if: inputs.enable-github-attestation
+    needs: publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # main 2026-08-11
+        with:
+          subject-name: ${{ inputs.image-name }}
+          subject-digest: ${{ needs.publish.outputs.digest }}
+          push-to-registry: true

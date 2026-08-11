@@ -1,0 +1,11 @@
+# SPDX-FileCopyrightText: 2026 Alexander Plate
+# SPDX-License-Identifier: BUSL-1.1
+
+blank_issues_enabled: false
+contact_links:
+  - name: Sicherheitslücke privat melden
+    url: https://github.com/ForgePort/.github/security/advisories/new
+    about: Keine Sicherheitsdetails in öffentlichen Issues veröffentlichen.
+  - name: Supporthinweise
+    url: https://github.com/ForgePort/.github/blob/main/SUPPORT.md
+    about: Unterstützte öffentliche und vertragliche Kontaktwege.
