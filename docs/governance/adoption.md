@@ -10,14 +10,15 @@
 3. Vollständige History-, Secret- und Vulnerability-Scans auswerten.
 4. Quality-, Dependency- und Security-Workflows zunächst beobachtend einführen.
 5. Checks nach erfolgreicher Erprobung im Ruleset verpflichtend machen.
-6. Prepare-Release und Release mit geschützten Environments testen.
-7. Rulesets erzwingen lassen: manueller Dispatch, reviewpflichtiger Prepare-PR,
-   Merge, geschützter Tag, Veröffentlichung und gegebenenfalls Public-Wechsel.
+6. Release-Gate, OCI- und Release-Workflows mit der geschützten Environment
+   `release` testen.
+7. Rulesets erzwingen lassen: reviewter Versionsstand, Merge, geschützter Tag,
+   Veröffentlichung und gegebenenfalls Public-Wechsel.
 8. Erst dann je öffentlichem Kandidaten Prüfbericht und Owner-Freigabe einholen.
 
-Beim leeren, bereits öffentlichen `.github`-Repository gilt für den ersten
-Commit die dokumentierte lokale Bootstrap-Ausnahme. Weder ein Review-Branch
-noch ein unreleased Platzhalter darf vorab gepusht werden.
+Beim leeren, bereits öffentlichen `.github`-Repository galt für den ersten
+Commit die dokumentierte lokale Bootstrap-Ausnahme. Ein Review-Branch wäre
+bereits eine Veröffentlichung gewesen.
 
 | Repository | Einführungsschwerpunkt |
 |---|---|
@@ -30,5 +31,7 @@ noch ein unreleased Platzhalter darf vorab gepusht werden.
 | `forgeport-license-issuer` | Privat; nur synthetisches CI-Testmaterial |
 
 Aufrufer pinnen wiederverwendbare Workflows auf einen Commit-SHA. Die konkrete
-BSL-Version und Datumsparameter werden pro veröffentlichtem Versionsstand
-reviewt; keine Root-Lizenz relizenziert Drittmaterial.
+BSL-Version wird pro veröffentlichtem Versionsstand reviewt. `LICENSE` enthält
+die deterministische Vierjahresregel und wird im Releasebuild nicht verändert;
+`Licensed Work` ist der stabile Komponentenname ohne Versions- oder
+Datumszusatz. Keine Root-Lizenz relizenziert Drittmaterial.

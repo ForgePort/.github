@@ -19,8 +19,8 @@
 - [ ] Externe Actions sind auf vollständige Commit-SHAs gepinnt.
 - [ ] Dokumentation und Release Notes sind angepasst oder nicht erforderlich.
 - [ ] Unvertrauenswürdiger PR-Code benötigt keine Secrets oder Schreibrechte.
-- [ ] BSL-Parameter und Drittanbietergrenzen sind releasefähig oder die
-  Änderung ist ausdrücklich unreleased.
+- [ ] Deterministische BSL-Regel, bytegleiche Lizenzkopien und
+  Drittanbietergrenzen sind releasefähig.
 
 ## Testergebnisse
 

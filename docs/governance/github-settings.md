@@ -10,12 +10,7 @@ Die folgenden Einstellungen sind Empfehlungen und nicht automatisch aktiv.
 - Basisberechtigung `read`; Sichtbarkeitsänderungen und Repositoryerstellung
   auf Owner beschränken.
 - Standard-Workflowberechtigung `contents: read`; Actions dürfen keine Pull
-  Requests erstellen oder freigeben, ausgenommen der eigens autorisierte
-  Prepare-Release-Workflow.
-- Die Repositoryoption zum Erstellen von Pull Requests durch Actions muss für
-  den Prepare-Workflow aktiviert werden. Nur dessen geschützter Job erhält
-  `contents: write` und `pull-requests: write`; Reviews durch Actions bleiben
-  unzulässig.
+  Requests erstellen oder freigeben.
 - Externe Fork-PR-Workflows benötigen Maintainer-Freigabe. Fork-Code erhält
   keine Secrets und keine Schreibrechte. Kein `pull_request_target` führt
   unvertrauenswürdigen Code aus.
@@ -32,10 +27,9 @@ Commits, aufgelöste Diskussionen, aktuelle Branchbasis und erforderliche
 Statuschecks verlangen; Force Push und Löschung blockieren. Für
 sicherheits-/releasekritische Repositories zwei Freigaben empfehlen.
 
-Für Tags `v*`: Erstellung, Änderung und Löschung auf Release-Maintainer
-beschränken. Nur `vMAJOR.MINOR.PATCH`, beginnend mit `v0.0.1`. Die
+Für Tags `v*`: Erstellung auf Release-Maintainer beschränken; Änderung und
+Löschung blockieren. Nur `vMAJOR.MINOR.PATCH`, beginnend mit `v0.0.1`. Die
 Environment `release` benötigt Required Reviewers und verbietet Self-Review.
-Die Environment `release-preparation` schützt den manuellen Prepare-Schritt.
 
 ## Supply Chain und Release
 
@@ -44,20 +38,20 @@ Die Environment `release-preparation` schützt den manuellen Prepare-Schritt.
 - SBOM, Third-Party-/Lizenzinventar, Notices und SHA-256-Prüfsummen beilegen.
 - Jedes Releasepaket enthält eine mit der Quelle bytegleiche `LICENSE` und
   eine `VERSION`, die exakt dem Tag ohne `v` entspricht.
+- Die BSL-Lizenz enthält die unveränderte deterministische Change-Date-Regel;
+  keine Releaseautomation schreibt Veröffentlichungsdaten in `LICENSE`.
+- Der `Licensed Work`-Parameter ist ein stabiler Komponentenname ohne Version,
+  Datum oder Releasezustand. Aufrufer übergeben diesen Namen explizit an die
+  wiederverwendbaren Release-Workflows.
+- Öffentliche Git-Historie, unveränderlicher Tag und der
+  GitHub-Release-Publikationszeitpunkt sind die Datumsevidenz. Provenance bindet
+  den getaggten Commit, Artefakte und den Hash der ausgelieferten Lizenz.
 - Sigstore/Cosign-Signaturen und registrygebundene SLSA-Provenance als portable
   Basis nutzen. GitHub Artifact Attestations nur zusätzlich aktivieren, wenn
   sie für Repositorysichtbarkeit und Tarif verfügbar sind.
-- Releases und Publish-Jobs scheitern bei den zentral festgelegten
-  unreleased BSL-Datumsmarkern oder der festgelegten
-  Unreleased-Kennzeichnung.
-- Prepare Release erhält Version und geplantes Erstveröffentlichungsdatum,
-  berechnet +4 Kalenderjahre und eröffnet einen reviewpflichtigen PR. Der
-  eigentliche Releasebuild ändert `LICENSE` nie.
 - Rulesets und Maintainerprozess müssen die Kette erzwingen:
-  autorisierter manueller `workflow_dispatch`, Prepare-PR, unabhängiges Review,
-  Merge, geschützter Tag und erst danach Package/GHCR/GitHub Release oder
-  Public-Sichtbarkeitswechsel. Eine Datumsverschiebung verlangt PR-Aktualisierung
-  und erneutes Review.
+  reviewte Source-Änderung, Merge, geschützter unveränderlicher Tag und erst
+  danach Package/GHCR/GitHub Release oder Public-Sichtbarkeitswechsel.
 
 ## Public Readiness
 
@@ -70,20 +64,8 @@ Kunden-/Personendaten und Workflows. `forgeport-int` und
 anderes Upstreammaterial nicht fälschlich erfassen. Dies ist keine rechtliche
 Freigabe.
 
-Das leere, bereits öffentliche Organisations-Repository benötigt beim ersten
-inhaltlichen Push einen Bootstrap: Die BSL-Daten müssen unmittelbar vorher im
-lokalen, geprüften Kandidaten manuell mit dem tatsächlichen Veröffentlichungstag
-parametrisiert und separat freigegeben werden, weil der Prepare-Workflow vor dem
-ersten Commit noch nicht auf dem Defaultbranch existiert.
-
-Ein Review-Branch ist für diesen Bootstrap unzulässig, weil bereits dessen Push
-die erste öffentliche Veröffentlichung wäre. Einmalig wird Prepare Release rein
-lokal mit dem ausdrücklich geplanten tatsächlichen Pushdatum ausgeführt. Ein
-anderer Maintainer prüft die vollständige staged Dateiliste sowie den exakten
-Tree- und Commit-Hash. Erst nach separater Ownerfreigabe wird exakt dieser
-Kandidat direkt als initialer `main`-Commit gepusht – ohne gleichzeitigen Tag,
-GitHub Release, Package oder OCI-Publish. Danach sind Rulesets und Environments
-sofort zu konfigurieren; alle Folgeänderungen laufen über Review-PRs. Verschiebt
-sich der Push auf einen anderen Kalendertag oder schlägt er fehl, werden
-First-Publication- und Change-Date erneut erzeugt und der vollständige Kandidat
-erneut getestet und reviewt.
+Beim einmaligen Bootstrap eines leeren öffentlichen Repositories muss ein
+anderer Maintainer den vollständigen Kandidaten und exakten Tree prüfen, bevor
+der Owner den direkten initialen `main`-Push freigibt. Ein vorab veröffentlichter
+Review-Branch ist keine private Prüffläche. `LICENSE` bleibt auch beim Bootstrap
+unverändert; der erfolgreiche öffentliche Git-Push ist Teil der Evidenz.

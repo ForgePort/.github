@@ -5,14 +5,15 @@ name: Reusable BSL release gate
 on:
   workflow_call:
     inputs:
+      licensed-work: { required: true, type: string }
       license-path: { required: false, default: LICENSE, type: string }
-      first-publication-date: { required: true, type: string }
       artifact-name: { required: true, type: string }
       artifact-path: { required: false, default: "release-artifacts", type: string }
       packaged-license-path: { required: false, default: "LICENSE", type: string }
       packaged-version-path: { required: false, default: "VERSION", type: string }
       packaged-notices-path: { required: false, default: "THIRD_PARTY_NOTICES.md", type: string }
       packaged-sbom-path: { required: false, default: "sbom.spdx.json", type: string }
+      packaged-provenance-path: { required: false, default: "provenance.slsa.json", type: string }
 permissions:
   contents: read
 jobs:
@@ -20,6 +21,17 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
+      - name: Reject non-release refs
+        shell: python
+        env:
+          REF: ${{ github.ref }}
+        run: |
+          import os, re
+          if not re.fullmatch(
+              r"refs/tags/v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)",
+              os.environ["REF"],
+          ):
+              raise SystemExit("release requires refs/tags/vMAJOR.MINOR.PATCH")
       - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # main 2026-08-11
         with: { persist-credentials: false }
       - name: Validate isolated artifact destination
@@ -36,61 +48,79 @@ jobs:
         with:
           name: ${{ inputs.artifact-name }}
           path: ${{ inputs.artifact-path }}
-      - name: Verify tag, BSL dates, source and publication files
+      - name: Verify tag, license and publication artifacts
         shell: python
         env:
-          REF_NAME: ${{ github.ref_name }}
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          SOURCE_SHA: ${{ github.sha }}
+          TAG: ${{ github.ref_name }}
+          LICENSED_WORK: ${{ inputs.licensed-work }}
           LICENSE_PATH: ${{ inputs.license-path }}
-          EXPECTED_PUBLICATION: ${{ inputs.first-publication-date }}
           ARTIFACT_PATH: ${{ inputs.artifact-path }}
           PACKAGED_LICENSE_PATH: ${{ inputs.packaged-license-path }}
           PACKAGED_VERSION_PATH: ${{ inputs.packaged-version-path }}
           PACKAGED_NOTICES_PATH: ${{ inputs.packaged-notices-path }}
           PACKAGED_SBOM_PATH: ${{ inputs.packaged-sbom-path }}
+          PACKAGED_PROVENANCE_PATH: ${{ inputs.packaged-provenance-path }}
         run: |
-          import datetime, json, os, pathlib, re
-          tag = os.environ["REF_NAME"]
+          import json, os, pathlib, re, urllib.request
+
+          tag = os.environ["TAG"]
           match = re.fullmatch(r"v((0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*))", tag)
           if not match:
               raise SystemExit("release requires vMAJOR.MINOR.PATCH tag")
           version = match.group(1)
-          root = pathlib.Path(".")
-          workspace = root.resolve()
-          source_license = pathlib.Path(os.environ["LICENSE_PATH"]).resolve()
-          if workspace not in source_license.parents or ".git" in source_license.relative_to(workspace).parts:
-              raise SystemExit("license path must stay inside the checked-out repository")
-          forbidden = (
-              "CHANGE-DATE-" + "SET-AT-FIRST-PUBLICATION",
-              "FIRST-PUBLICATION-" + "DATE-SET-AT-RELEASE",
-              "(" + "unreleased)",
+          workspace = pathlib.Path(".").resolve()
+
+          def source_path(name):
+              path = pathlib.Path(name).resolve()
+              if workspace not in path.parents or ".git" in path.relative_to(workspace).parts:
+                  raise SystemExit(f"source path must stay inside the repository: {name}")
+              return path
+
+          source_license = source_path(os.environ["LICENSE_PATH"])
+          license_text = source_license.read_text(encoding="utf-8")
+          rule = (
+              "Change Date: Four years from the date this version of the Licensed Work "
+              "is first publicly available."
           )
-          relevant = [p for p in root.rglob("*") if p.is_file() and ".git" not in p.parts]
-          for path in relevant:
-              try:
-                  text = path.read_text(encoding="utf-8")
-              except UnicodeDecodeError:
-                  continue
-              for token in forbidden:
-                  if token in text:
-                      raise SystemExit(f"release-blocking token {token!r} in {path}")
-          text = source_license.read_text(encoding="utf-8")
-          if not re.search(rf"(?m)^Licensed Work: .+?{re.escape(version)}$", text):
-              raise SystemExit("Licensed Work does not match tag version")
-          first_m = re.search(r"(?m)^First Public Publication: (\d{4}-\d{2}-\d{2})$", text)
-          change_m = re.search(r"(?m)^Change Date: (\d{4}-\d{2}-\d{2})$", text)
-          if not first_m or not change_m:
-              raise SystemExit("publication or Change Date missing")
-          first = datetime.date.fromisoformat(first_m.group(1))
-          change = datetime.date.fromisoformat(change_m.group(1))
-          expected = datetime.date.fromisoformat(os.environ["EXPECTED_PUBLICATION"])
-          if first != expected:
-              raise SystemExit("source publication date does not match release input")
-          try:
-              expected_change = first.replace(year=first.year + 4)
-          except ValueError as exc:
-              raise SystemExit("four-year calendar date does not exist") from exc
-          if change != expected_change:
-              raise SystemExit("Change Date is not exactly four calendar years later")
+          if rule not in license_text:
+              raise SystemExit("LICENSE does not contain the deterministic Change Date rule")
+          if re.search(r"(?m)^First Public Publication:", license_text):
+              raise SystemExit("LICENSE contains a release-specific publication date")
+          if re.search(r"(?m)^Change Date:\s*\d{4}-\d{2}-\d{2}\s*$", license_text):
+              raise SystemExit("LICENSE contains a release-specific ISO Change Date")
+          licensed_work = os.environ["LICENSED_WORK"]
+          if not licensed_work or "\n" in licensed_work or "\r" in licensed_work:
+              raise SystemExit("licensed-work must be a non-empty single-line stable name")
+          licensed_lines = re.findall(r"(?m)^Licensed Work:\s*(.+?)\s*$", license_text)
+          if licensed_lines != [licensed_work]:
+              raise SystemExit("LICENSE Licensed Work does not match configured stable name")
+
+          headers = {
+              "Accept": "application/vnd.github+json",
+              "Authorization": f"Bearer {os.environ['GH_TOKEN']}",
+              "X-GitHub-Api-Version": "2022-11-28",
+          }
+          request = urllib.request.Request(
+              f"https://api.github.com/repos/{os.environ['REPOSITORY']}/git/ref/tags/{tag}",
+              headers=headers,
+          )
+          with urllib.request.urlopen(request) as response:
+              ref = json.load(response)
+          target = ref["object"]
+          if target["type"] == "tag":
+              request = urllib.request.Request(
+                  f"https://api.github.com/repos/{os.environ['REPOSITORY']}/git/tags/{target['sha']}",
+                  headers=headers,
+              )
+              with urllib.request.urlopen(request) as response:
+                  tag_object = json.load(response)
+              target = tag_object["object"]
+          if target["type"] != "commit" or target["sha"] != os.environ["SOURCE_SHA"]:
+              raise SystemExit("release tag does not resolve to the checked-out commit")
+
           artifact_root = pathlib.Path(os.environ["ARTIFACT_PATH"]).resolve()
           if artifact_root == workspace or workspace not in artifact_root.parents:
               raise SystemExit("artifact path must be a dedicated workspace subdirectory")
@@ -98,11 +128,20 @@ jobs:
           packaged_version = (artifact_root / os.environ["PACKAGED_VERSION_PATH"]).resolve()
           packaged_notices = (artifact_root / os.environ["PACKAGED_NOTICES_PATH"]).resolve()
           packaged_sbom = (artifact_root / os.environ["PACKAGED_SBOM_PATH"]).resolve()
-          packaged_paths = (packaged_license, packaged_version, packaged_notices, packaged_sbom)
+          packaged_provenance = (
+              artifact_root / os.environ["PACKAGED_PROVENANCE_PATH"]
+          ).resolve()
+          packaged_paths = (
+              packaged_license,
+              packaged_version,
+              packaged_notices,
+              packaged_sbom,
+              packaged_provenance,
+          )
           if any(artifact_root not in path.parents for path in packaged_paths):
               raise SystemExit("packaged paths must stay below artifact path")
           if packaged_license.read_bytes() != source_license.read_bytes():
-              raise SystemExit("packaged LICENSE differs from source LICENSE")
+              raise SystemExit("packaged LICENSE differs from tagged source LICENSE")
           if packaged_version.read_text(encoding="utf-8").strip() != version:
               raise SystemExit("packaged VERSION differs from release tag")
           if not packaged_notices.is_file() or packaged_notices.stat().st_size == 0:
@@ -110,11 +149,10 @@ jobs:
           sbom = json.loads(packaged_sbom.read_text(encoding="utf-8"))
           if not str(sbom.get("spdxVersion", "")).startswith("SPDX-"):
               raise SystemExit("packaged SBOM is not SPDX JSON")
-          for path in artifact_root.rglob("*"):
-              if path.is_file():
-                  try:
-                      data = path.read_text(encoding="utf-8")
-                  except UnicodeDecodeError:
-                      continue
-                  if any(token in data for token in forbidden):
-                      raise SystemExit(f"release-blocking token in artifact {path}")
+          provenance = json.loads(packaged_provenance.read_text(encoding="utf-8"))
+          build_definition = provenance.get("buildDefinition", {})
+          external = build_definition.get("externalParameters", {})
+          if external.get("revision") != os.environ["SOURCE_SHA"]:
+              raise SystemExit("provenance revision differs from tagged commit")
+          if not provenance.get("runDetails", {}).get("builder", {}).get("id"):
+              raise SystemExit("provenance builder identity is missing")

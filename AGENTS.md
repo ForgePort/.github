@@ -32,12 +32,18 @@ Governance- und wiederverwendbare CI-Dateien für ForgePort.
 - ForgePort-eigene Inhalte stehen unter BSL 1.1 mit Apache-2.0 als Change
   License. Drittanbieter-/Upstreammaterial bleibt unter seiner eigenen Lizenz
   und muss durch SPDX, Pfade und Notices eindeutig abgegrenzt werden.
-- Noch nie veröffentlichte Versionen verwenden den zentral festgelegten,
-  maschinenprüfbaren Change-Date-Blocker und eine konkrete
-  als unveröffentlicht gekennzeichnete `0.0.1`-Bezeichnung. Dieser Zustand
-  darf nicht veröffentlicht
-  werden. Der reviewpflichtige Prepare-Release-Prozess setzt den tatsächlichen
-  Erstveröffentlichungstag und exakt vier Kalenderjahre später das Change Date.
+- Die BSL-Lizenz enthält wörtlich die deterministische Change-Date-Regel
+  `Four years from the date this version of the Licensed Work is first publicly
+  available.` Releaseautomation verändert `LICENSE` niemals. Öffentliche
+  Git-Historie, unveränderlicher Tag, GitHub-Release-Zeitpunkt und Provenance
+  bilden die Veröffentlichungsevidenz; ausgelieferte Lizenzkopien sind
+  bytegleich zur Lizenz des getaggten Quellstands.
+- `Licensed Work` enthält ausschließlich den stabilen Produkt- oder
+  Komponentennamen. Version, Datum und Releasezustand werden nur durch
+  `VERSION`, Tag, Commit und Veröffentlichungsevidenz beschrieben.
+- Historische Releases bleiben in der Git-Historie unverändert. Das ist keine
+  Vorlage für neue Versionen; die wiederverwendbaren Release-Gates verlangen
+  die deterministische Regel und einen konfigurierten stabilen Namen.
 - Kommunikation erfolgt über Issues, Pull Requests und versionierte fachliche
   Dateien, nicht über eine gemeinsam gepflegte Statusdatei.
 
