@@ -9,6 +9,10 @@ on:
       image-name: { required: true, type: string }
       context: { required: false, default: ".", type: string }
       containerfile: { required: false, default: "./Containerfile", type: string }
+      trusted-artifact-name: { required: false, default: "", type: string }
+      trusted-artifact-path: { required: false, default: ".forgeport-artifacts/build", type: string }
+      trusted-artifact-files: { required: false, default: "", type: string }
+      trusted-artifact-sha256: { required: false, default: "", type: string }
       license-path: { required: false, default: "LICENSE", type: string }
       oci-license-expression: { required: false, default: "BUSL-1.1", type: string }
       enable-github-attestation: { required: false, default: false, type: boolean }
@@ -23,6 +27,7 @@ jobs:
     timeout-minutes: 45
     environment: release
     permissions:
+      actions: read
       contents: read
       packages: write
       id-token: write
@@ -41,7 +46,248 @@ jobs:
           ):
               raise SystemExit("release requires refs/tags/vMAJOR.MINOR.PATCH")
       - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # main 2026-08-11
-        with: { persist-credentials: false }
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - id: release-trust
+        name: Load immutable central release-tag trust
+        shell: python
+        env:
+          GH_TOKEN: ${{ github.token }}
+          WORKFLOW_REF: ${{ job.workflow_ref }}
+          WORKFLOW_SHA: ${{ job.workflow_sha }}
+        run: |
+          import base64, json, os, pathlib, re, urllib.request
+
+          match = re.fullmatch(
+              r"ForgePort/\.github/\.github/workflows/reusable-oci\.yml@([0-9a-f]{40})",
+              os.environ["WORKFLOW_REF"],
+          )
+          if not match:
+              raise SystemExit("reusable workflow must be called by an immutable central commit SHA")
+          central_sha = match.group(1)
+          if central_sha != os.environ["WORKFLOW_SHA"]:
+              raise SystemExit("central workflow ref and workflow SHA differ")
+          request = urllib.request.Request(
+              "https://api.github.com/repos/ForgePort/.github/contents/"
+              f"release-trust/allowed_signers?ref={central_sha}",
+              headers={
+                  "Accept": "application/vnd.github+json",
+                  "Authorization": f"Bearer {os.environ['GH_TOKEN']}",
+                  "X-GitHub-Api-Version": "2022-11-28",
+              },
+          )
+          with urllib.request.urlopen(request) as response:
+              document = json.load(response)
+          if document.get("type") != "file" or document.get("encoding") != "base64":
+              raise SystemExit("central release trust is not a regular base64-encoded file")
+          trust = base64.b64decode("".join(document.get("content", "").split()), validate=True)
+          text = trust.decode("utf-8")
+          active = [line for line in text.splitlines() if line.strip() and not line.lstrip().startswith("#")]
+          if len(active) != 1:
+              raise SystemExit("central release trust must contain exactly one active signer")
+          fields = active[0].split()
+          if not fields or fields[0] != "forgeport-release" or fields.count("ssh-ed25519") != 1:
+              raise SystemExit("central release trust must authorize forgeport-release with Ed25519")
+          trust_path = pathlib.Path(os.environ["RUNNER_TEMP"]) / "forgeport-release-allowed-signers"
+          trust_path.write_bytes(trust)
+          with pathlib.Path(os.environ["GITHUB_OUTPUT"]).open("a", encoding="utf-8") as output:
+              output.write(f"path={trust_path}\n")
+              output.write(f"central_sha={central_sha}\n")
+      - name: Verify SSH-signed annotated release tag
+        shell: bash
+        env:
+          TAG: ${{ github.ref_name }}
+          TRUST_FILE: ${{ steps.release-trust.outputs.path }}
+        run: |
+          set -euo pipefail
+          test "$(git cat-file -t "refs/tags/$TAG")" = tag || {
+            echo "Release tag must be annotated and SSH-signed"
+            exit 1
+          }
+          git config --local gpg.format ssh
+          git config --local gpg.ssh.allowedSignersFile "$TRUST_FILE"
+          LC_ALL=C git verify-tag "$TAG" 2>&1 | tee "$RUNNER_TEMP/verify-tag.txt"
+          grep -F 'Good "git" signature for forgeport-release' "$RUNNER_TEMP/verify-tag.txt"
+      - name: Validate trusted artifact contract and build inputs
+        shell: python
+        env:
+          ARTIFACT_NAME: ${{ inputs.trusted-artifact-name }}
+          ARTIFACT_PATH: ${{ inputs.trusted-artifact-path }}
+          ARTIFACT_FILES: ${{ inputs.trusted-artifact-files }}
+          ARTIFACT_SHA256: ${{ inputs.trusted-artifact-sha256 }}
+          BUILD_CONTEXT: ${{ inputs.context }}
+          CONTAINERFILE: ${{ inputs.containerfile }}
+        run: |
+          import os, pathlib, re
+
+          workspace = pathlib.Path(".").resolve()
+
+          def checked_path(raw, label, *, must_exist):
+              candidate = pathlib.Path(raw)
+              if candidate.is_absolute() or ".." in candidate.parts:
+                  raise SystemExit(f"{label} must be a repository-relative path without '..'")
+              resolved = candidate.resolve()
+              if resolved == workspace or workspace not in resolved.parents:
+                  raise SystemExit(f"{label} must stay below the workspace")
+              if ".git" in resolved.relative_to(workspace).parts:
+                  raise SystemExit(f"{label} must not address .git")
+              if must_exist and not resolved.exists():
+                  raise SystemExit(f"{label} does not exist")
+              return resolved
+
+          context = pathlib.Path(os.environ["BUILD_CONTEXT"])
+          if context == pathlib.Path("."):
+              context_path = workspace
+          else:
+              context_path = checked_path(str(context), "build context", must_exist=True)
+          if not context_path.is_dir():
+              raise SystemExit("build context must be a directory")
+          containerfile = checked_path(
+              os.environ["CONTAINERFILE"], "Containerfile", must_exist=True
+          )
+          if not containerfile.is_file():
+              raise SystemExit("Containerfile must be a regular file")
+
+          name = os.environ["ARTIFACT_NAME"]
+          expected = [line.strip() for line in os.environ["ARTIFACT_FILES"].splitlines() if line.strip()]
+          expected_digest = os.environ["ARTIFACT_SHA256"]
+          if not name:
+              if expected or expected_digest:
+                  raise SystemExit("trusted artifact files/digest require trusted-artifact-name")
+              raise SystemExit(0)
+          if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", name):
+              raise SystemExit("trusted artifact name contains unsupported characters")
+          destination = checked_path(
+              os.environ["ARTIFACT_PATH"], "trusted artifact destination", must_exist=False
+          )
+          if destination.exists():
+              raise SystemExit("trusted artifact destination must not already exist")
+          protected = {context_path, containerfile, workspace / ".git"}
+          if destination in protected:
+              raise SystemExit("trusted artifact destination overlaps protected source")
+          if not expected:
+              raise SystemExit("trusted-artifact-files must explicitly list every expected file")
+          if not re.fullmatch(r"[0-9a-f]{64}", expected_digest):
+              raise SystemExit("trusted-artifact-sha256 must be a lowercase SHA-256 digest")
+          normalized = []
+          for item in expected:
+              path = pathlib.PurePosixPath(item)
+              if path.is_absolute() or ".." in path.parts or "." == item:
+                  raise SystemExit(f"invalid expected artifact path: {item}")
+              normalized.append(path.as_posix())
+          if len(normalized) != len(set(normalized)):
+              raise SystemExit("trusted-artifact-files contains duplicates")
+      - id: trusted-download
+        if: inputs.trusted-artifact-name != ''
+        uses: actions/download-artifact@484a0b528fb4d7bd804637ccb632e47a0e638317 # main 2026-08-11
+        with:
+          name: ${{ inputs.trusted-artifact-name }}
+          path: ${{ inputs.trusted-artifact-path }}
+      - id: trusted-artifact
+        name: Verify and digest trusted artifact
+        if: inputs.trusted-artifact-name != ''
+        shell: python
+        env:
+          ARTIFACT_NAME: ${{ inputs.trusted-artifact-name }}
+          ARTIFACT_PATH: ${{ inputs.trusted-artifact-path }}
+          ARTIFACT_FILES: ${{ inputs.trusted-artifact-files }}
+          EXPECTED_CONTENT_SHA256: ${{ inputs.trusted-artifact-sha256 }}
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          REPOSITORY_ID: ${{ github.repository_id }}
+          RUN_ID: ${{ github.run_id }}
+          REF_NAME: ${{ github.ref_name }}
+          SOURCE_SHA: ${{ github.sha }}
+        run: |
+          import hashlib, json, os, pathlib, re, stat, urllib.parse, urllib.request
+
+          workspace = pathlib.Path(".").resolve()
+          root = pathlib.Path(os.environ["ARTIFACT_PATH"]).resolve()
+          if workspace not in root.parents or ".git" in root.relative_to(workspace).parts:
+              raise SystemExit("trusted artifact destination escaped workspace")
+          expected = {
+              pathlib.PurePosixPath(line.strip()).as_posix()
+              for line in os.environ["ARTIFACT_FILES"].splitlines()
+              if line.strip()
+          }
+          actual = set()
+          manifest = []
+          for path in sorted(root.rglob("*")):
+              relative = path.relative_to(root).as_posix()
+              mode = path.lstat().st_mode
+              if stat.S_ISLNK(mode) or path.is_symlink():
+                  raise SystemExit(f"symlink is forbidden in trusted artifact: {relative}")
+              resolved = path.resolve()
+              if root not in resolved.parents:
+                  raise SystemExit(f"artifact entry escaped destination: {relative}")
+              if path.is_dir():
+                  continue
+              if not path.is_file():
+                  raise SystemExit(f"non-regular artifact entry: {relative}")
+              actual.add(relative)
+              digest = hashlib.sha256(path.read_bytes()).hexdigest()
+              manifest.append(f"{digest}  {relative}")
+          if actual != expected:
+              missing = sorted(expected - actual)
+              unexpected = sorted(actual - expected)
+              raise SystemExit(f"artifact file mismatch; missing={missing}, unexpected={unexpected}")
+          query = urllib.parse.urlencode({"name": os.environ["ARTIFACT_NAME"]})
+          request = urllib.request.Request(
+              f"https://api.github.com/repos/{os.environ['REPOSITORY']}/actions/runs/"
+              f"{os.environ['RUN_ID']}/artifacts?{query}",
+              headers={
+                  "Accept": "application/vnd.github+json",
+                  "Authorization": f"Bearer {os.environ['GH_TOKEN']}",
+                  "X-GitHub-Api-Version": "2022-11-28",
+              },
+          )
+          with urllib.request.urlopen(request) as response:
+              artifacts = json.load(response).get("artifacts", [])
+          artifacts = [
+              artifact
+              for artifact in artifacts
+              if artifact.get("name") == os.environ["ARTIFACT_NAME"]
+              and artifact.get("workflow_run", {}).get("id") == int(os.environ["RUN_ID"])
+              and artifact.get("workflow_run", {}).get("repository_id")
+              == int(os.environ["REPOSITORY_ID"])
+              and artifact.get("workflow_run", {}).get("head_repository_id")
+              == int(os.environ["REPOSITORY_ID"])
+              and artifact.get("workflow_run", {}).get("head_sha") == os.environ["SOURCE_SHA"]
+              and not artifact.get("expired", False)
+          ]
+          if len(artifacts) != 1:
+              raise SystemExit("expected exactly one non-expired artifact from this workflow run")
+          archive_digest = artifacts[0].get("digest", "")
+          if not re.fullmatch(r"sha256:[0-9a-f]{64}", archive_digest):
+              raise SystemExit("Actions artifact API digest is missing or malformed")
+          run_request = urllib.request.Request(
+              f"https://api.github.com/repos/{os.environ['REPOSITORY']}/actions/runs/"
+              f"{os.environ['RUN_ID']}",
+              headers=request.headers,
+          )
+          with urllib.request.urlopen(run_request) as response:
+              run = json.load(response)
+          if run.get("repository", {}).get("full_name") != os.environ["REPOSITORY"]:
+              raise SystemExit("workflow run repository differs from current repository")
+          if run.get("head_sha") != os.environ["SOURCE_SHA"]:
+              raise SystemExit("workflow run source commit differs from current commit")
+          if run.get("event") != "push":
+              raise SystemExit("trusted artifact must come from the current tag-push workflow run")
+          manifest_text = "\n".join(manifest) + "\n"
+          content_digest = hashlib.sha256(manifest_text.encode()).hexdigest()
+          if content_digest != os.environ["EXPECTED_CONTENT_SHA256"]:
+              raise SystemExit("trusted artifact content digest differs from caller expectation")
+          manifest_path = pathlib.Path(os.environ["RUNNER_TEMP"]) / "trusted-artifact-manifest.sha256"
+          manifest_path.write_text(
+              manifest_text, encoding="utf-8"
+          )
+          output = pathlib.Path(os.environ["GITHUB_OUTPUT"])
+          with output.open("a", encoding="utf-8") as handle:
+              handle.write(f"name={os.environ['ARTIFACT_NAME']}\n")
+              handle.write(f"archive_digest={archive_digest}\n")
+              handle.write(f"content_sha256={content_digest}\n")
+              handle.write(f"manifest_path={manifest_path}\n")
       - name: Enforce release-ready BSL source
         shell: python
         env:
@@ -90,13 +336,18 @@ jobs:
           )
           with urllib.request.urlopen(request) as response:
               target = json.load(response)["object"]
-          if target["type"] == "tag":
-              request = urllib.request.Request(
-                  f"https://api.github.com/repos/{os.environ['REPOSITORY']}/git/tags/{target['sha']}",
-                  headers=headers,
-              )
-              with urllib.request.urlopen(request) as response:
-                  target = json.load(response)["object"]
+          if target["type"] != "tag":
+              raise SystemExit("release tag must be an annotated signed tag object")
+          request = urllib.request.Request(
+              f"https://api.github.com/repos/{os.environ['REPOSITORY']}/git/tags/{target['sha']}",
+              headers=headers,
+          )
+          with urllib.request.urlopen(request) as response:
+              tag_object = json.load(response)
+          verification = tag_object.get("verification", {})
+          if not verification.get("verified") or verification.get("reason") != "valid":
+              raise SystemExit("GitHub does not report a valid verified release-tag signature")
+          target = tag_object["object"]
           if target["type"] != "commit" or target["sha"] != os.environ["SOURCE_SHA"]:
               raise SystemExit("release tag does not resolve to checked-out commit")
       - id: license
@@ -106,6 +357,17 @@ jobs:
           LICENSE_PATH: ${{ inputs.license-path }}
         run: |
           printf 'sha256=%s\n' "$(sha256sum "$LICENSE_PATH" | cut -d ' ' -f 1)" >> "$GITHUB_OUTPUT"
+      - id: artifact-evidence
+        name: Normalize optional artifact evidence
+        shell: bash
+        env:
+          ARTIFACT_NAME: ${{ steps.trusted-artifact.outputs.name }}
+          ARCHIVE_DIGEST: ${{ steps.trusted-artifact.outputs.archive_digest }}
+          CONTENT_SHA256: ${{ steps.trusted-artifact.outputs.content_sha256 }}
+        run: |
+          printf 'name=%s\n' "${ARTIFACT_NAME:-none}" >> "$GITHUB_OUTPUT"
+          printf 'archive_digest=%s\n' "${ARCHIVE_DIGEST:-none}" >> "$GITHUB_OUTPUT"
+          printf 'content_sha256=%s\n' "${CONTENT_SHA256:-none}" >> "$GITHUB_OUTPUT"
       - uses: docker/setup-buildx-action@5b9cf3909b54a280b6df6eee035755eb1f2fd611 # main 2026-08-11
       - uses: docker/login-action@eed250920367120910219051b8653a1d846f7f03 # main 2026-08-11
         with:
@@ -122,6 +384,9 @@ jobs:
           labels: |
             org.opencontainers.image.licenses=${{ inputs.oci-license-expression }}
             org.forgeport.license.sha256=${{ steps.license.outputs.sha256 }}
+            org.forgeport.build-artifact.name=${{ steps.artifact-evidence.outputs.name }}
+            org.forgeport.build-artifact.archive-digest=${{ steps.artifact-evidence.outputs.archive_digest }}
+            org.forgeport.build-artifact.content-sha256=${{ steps.artifact-evidence.outputs.content_sha256 }}
       - id: build
         uses: docker/build-push-action@2ca78c6bec76527009825f31aae0532b4d40d820 # main 2026-08-11
         with:
@@ -162,9 +427,12 @@ jobs:
           IMAGE: ${{ inputs.image-name }}
           DIGEST: ${{ steps.build.outputs.digest }}
           LICENSE_SHA256: ${{ steps.license.outputs.sha256 }}
+          ARTIFACT_NAME: ${{ steps.artifact-evidence.outputs.name }}
+          ARTIFACT_ARCHIVE_DIGEST: ${{ steps.artifact-evidence.outputs.archive_digest }}
+          ARTIFACT_CONTENT_SHA256: ${{ steps.artifact-evidence.outputs.content_sha256 }}
         run: |
-          jq -n --arg repository "$GITHUB_REPOSITORY" --arg sha "$GITHUB_SHA" --arg tag "$GITHUB_REF_NAME" --arg license_sha256 "$LICENSE_SHA256" --arg run "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" \
-            '{buildDefinition:{buildType:"https://github.com/ForgePort/.github/reusable-oci/v1",externalParameters:{repository:$repository,revision:$sha,tag:$tag,licenseSha256:$license_sha256},internalParameters:{},resolvedDependencies:[]},runDetails:{builder:{id:"https://github.com/actions/runner"},metadata:{invocationId:$run},byproducts:[]}}' > provenance.slsa.json
+          jq -n --arg repository "$GITHUB_REPOSITORY" --arg sha "$GITHUB_SHA" --arg tag "$GITHUB_REF_NAME" --arg license_sha256 "$LICENSE_SHA256" --arg artifact_name "$ARTIFACT_NAME" --arg artifact_archive_digest "$ARTIFACT_ARCHIVE_DIGEST" --arg artifact_content_sha256 "$ARTIFACT_CONTENT_SHA256" --arg run "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" \
+            '{buildDefinition:{buildType:"https://github.com/ForgePort/.github/reusable-oci/v1",externalParameters:{repository:$repository,revision:$sha,tag:$tag,licenseSha256:$license_sha256,trustedArtifact:{name:$artifact_name,archiveDigest:$artifact_archive_digest,contentSha256:$artifact_content_sha256}},internalParameters:{},resolvedDependencies:[]},runDetails:{builder:{id:"https://github.com/actions/runner"},metadata:{invocationId:$run},byproducts:[]}}' > provenance.slsa.json
           cosign attest --yes --type slsaprovenance --predicate provenance.slsa.json "${IMAGE}@${DIGEST}"
       - name: Promote verified digest to release tags
         shell: bash
@@ -200,6 +468,7 @@ jobs:
             source-commit.txt
             oci-LICENSE
             oci-checksums.sha256
+            ${{ steps.trusted-artifact.outputs.manifest_path }}
           if-no-files-found: error
           retention-days: 30
 

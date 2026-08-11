@@ -10,11 +10,16 @@
 3. Vollständige History-, Secret- und Vulnerability-Scans auswerten.
 4. Quality-, Dependency- und Security-Workflows zunächst beobachtend einführen.
 5. Checks nach erfolgreicher Erprobung im Ruleset verpflichtend machen.
-6. Release-Gate, OCI- und Release-Workflows mit der geschützten Environment
-   `release` testen.
-7. Rulesets erzwingen lassen: reviewter Versionsstand, Merge, geschützter Tag,
+6. Den realen Ed25519-Public-Key als zentrale
+   `release-trust/allowed_signers` reviewen und denselben Schlüssel bei GitHub
+   als Signing Key registrieren. Den zugehörigen Private Key erst nach
+   gesonderter Schlüsselfreigabe ausschließlich als Environment-Secret
+   `FORGEPORT_RELEASE_SSH_PRIVATE_KEY` in `release` hinterlegen.
+7. Den manuellen Tag-Caller, Release-Gate, OCI- und Release-Workflow mit der
+   geschützten Environment `release` und synthetischem Testmaterial testen.
+8. Rulesets erzwingen lassen: reviewter Versionsstand, Merge, signierter Tag,
    Veröffentlichung und gegebenenfalls Public-Wechsel.
-8. Erst dann je öffentlichem Kandidaten Prüfbericht und Owner-Freigabe einholen.
+9. Erst dann je öffentlichem Kandidaten Prüfbericht und Owner-Freigabe einholen.
 
 Beim leeren, bereits öffentlichen `.github`-Repository galt für den ersten
 Commit die dokumentierte lokale Bootstrap-Ausnahme. Ein Review-Branch wäre

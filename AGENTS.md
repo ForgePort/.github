@@ -28,6 +28,11 @@ Governance- und wiederverwendbare CI-Dateien für ForgePort.
   Kein `pull_request_target` zum Ausführen von PR-Code verwenden.
 - Keine automatischen Merges. Releases benötigen geschützte Tags und die
   manuell freizugebende GitHub-Environment `release`.
+- Release-Tags sind annotierte SSH-signierte Tags eines dedizierten
+  Ed25519-Schlüssels. Der Private Key darf ausschließlich im geschützten
+  Environment-Secret `FORGEPORT_RELEASE_SSH_PRIVATE_KEY` liegen; PRs und normale
+  CI erhalten ihn nie. Zentrale Gates prüfen den Principal
+  `forgeport-release` gegen commitgebundene öffentliche Trust-Evidenz.
 - Renovate nicht einführen. Dependabot verwenden; Major-Updates separat halten.
 - ForgePort-eigene Inhalte stehen unter BSL 1.1 mit Apache-2.0 als Change
   License. Drittanbieter-/Upstreammaterial bleibt unter seiner eigenen Lizenz

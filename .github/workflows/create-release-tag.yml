@@ -1,0 +1,198 @@
+# SPDX-FileCopyrightText: 2026 Alexander Plate
+# SPDX-License-Identifier: BUSL-1.1
+
+name: Create signed release tag
+on:
+  workflow_call:
+    inputs:
+      version:
+        required: true
+        type: string
+      source-commit:
+        required: true
+        type: string
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Exact release version without the v prefix
+        required: true
+        type: string
+      source-commit:
+        description: Exact reviewed 40-character commit SHA at the default-branch head
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  sign-tag:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: release
+    permissions:
+      contents: write
+    steps:
+      - name: Validate immutable inputs and workflow authority
+        id: validate
+        shell: python
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          REF: ${{ github.ref }}
+          SOURCE_COMMIT: ${{ inputs.source-commit }}
+          VERSION: ${{ inputs.version }}
+          CENTRAL_WORKFLOW_REF: ${{ job.workflow_ref }}
+          CENTRAL_WORKFLOW_SHA: ${{ job.workflow_sha }}
+          WORKFLOW_SHA: ${{ github.sha }}
+        run: |
+          import base64, json, os, pathlib, re, urllib.error, urllib.request
+
+          version = os.environ["VERSION"]
+          source = os.environ["SOURCE_COMMIT"]
+          if not re.fullmatch(r"(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)", version):
+              raise SystemExit("version must be MAJOR.MINOR.PATCH without a v prefix")
+          if not re.fullmatch(r"[0-9a-f]{40}", source):
+              raise SystemExit("source-commit must be an exact lowercase 40-character SHA")
+          headers = {
+              "Accept": "application/vnd.github+json",
+              "Authorization": f"Bearer {os.environ['GH_TOKEN']}",
+              "X-GitHub-Api-Version": "2022-11-28",
+          }
+
+          def github(path):
+              request = urllib.request.Request(
+                  f"https://api.github.com/repos/{os.environ['REPOSITORY']}/{path}",
+                  headers=headers,
+              )
+              with urllib.request.urlopen(request) as response:
+                  return json.load(response)
+
+          repository = github("")
+          default_branch = repository["default_branch"]
+          if os.environ["REF"] != f"refs/heads/{default_branch}":
+              raise SystemExit("tag creation must be dispatched from the default branch")
+          head = github(f"commits/{default_branch}")["sha"]
+          if source != head or os.environ["WORKFLOW_SHA"] != head:
+              raise SystemExit("source commit and workflow revision must equal current default-branch head")
+          immutable = re.fullmatch(
+              r"ForgePort/\.github/\.github/workflows/create-release-tag\.yml@([0-9a-f]{40})",
+              os.environ["CENTRAL_WORKFLOW_REF"],
+          )
+          direct = (
+              os.environ["REPOSITORY"] == "ForgePort/.github"
+              and os.environ["CENTRAL_WORKFLOW_REF"]
+              == "ForgePort/.github/.github/workflows/create-release-tag.yml@refs/heads/main"
+          )
+          if immutable:
+              central_sha = immutable.group(1)
+              if central_sha != os.environ["CENTRAL_WORKFLOW_SHA"]:
+                  raise SystemExit("central workflow ref and workflow SHA differ")
+          elif direct:
+              central_sha = os.environ["CENTRAL_WORKFLOW_SHA"]
+          else:
+              raise SystemExit("tag workflow must be called by an immutable central commit SHA")
+          tag = f"v{version}"
+          try:
+              github(f"git/ref/tags/{tag}")
+          except urllib.error.HTTPError as error:
+              if error.code != 404:
+                  raise
+          else:
+              raise SystemExit("release tag already exists and must never be rewritten")
+          trust_request = urllib.request.Request(
+              "https://api.github.com/repos/ForgePort/.github/contents/"
+              f"release-trust/allowed_signers?ref={central_sha}",
+              headers=headers,
+          )
+          with urllib.request.urlopen(trust_request) as response:
+              trust_document = json.load(response)
+          if trust_document.get("type") != "file" or trust_document.get("encoding") != "base64":
+              raise SystemExit("central release trust is not a regular base64-encoded file")
+          trust_bytes = base64.b64decode(
+              "".join(trust_document.get("content", "").split()), validate=True
+          )
+          trust_text = trust_bytes.decode("utf-8")
+          active = [
+              line for line in trust_text.splitlines()
+              if line.strip() and not line.lstrip().startswith("#")
+          ]
+          if len(active) != 1:
+              raise SystemExit("central release trust must contain exactly one active signer")
+          fields = active[0].split()
+          if not fields or fields[0] != "forgeport-release" or fields.count("ssh-ed25519") != 1:
+              raise SystemExit("central release trust must authorize forgeport-release with Ed25519")
+          trust_path = pathlib.Path(os.environ["RUNNER_TEMP"]) / "forgeport-release-allowed-signers"
+          trust_path.write_bytes(trust_bytes)
+          output = pathlib.Path(os.environ["GITHUB_OUTPUT"])
+          with output.open("a", encoding="utf-8") as handle:
+              handle.write(f"tag={tag}\n")
+              handle.write(f"sha={source}\n")
+              handle.write(f"trust_path={trust_path}\n")
+              handle.write(f"central_sha={central_sha}\n")
+      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # main 2026-08-11
+        with:
+          fetch-depth: 0
+          ref: ${{ steps.validate.outputs.sha }}
+      - name: Validate release-ready source
+        shell: python
+        env:
+          SOURCE_COMMIT: ${{ steps.validate.outputs.sha }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          import pathlib, re, subprocess
+
+          import os
+
+          if subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip() != os.environ["SOURCE_COMMIT"]:
+              raise SystemExit("checkout differs from authorized source commit")
+          version = os.environ["VERSION"]
+          version_file = pathlib.Path("VERSION")
+          if not version_file.is_file() or version_file.read_text(encoding="utf-8").strip() != version:
+              raise SystemExit("VERSION differs from authorized release version")
+          license_file = pathlib.Path("LICENSE")
+          license_text = license_file.read_text(encoding="utf-8")
+          rule = (
+              "Change Date: Four years from the date this version of the Licensed Work "
+              "is first publicly available."
+          )
+          if rule not in license_text:
+              raise SystemExit("LICENSE lacks the deterministic BSL Change Date rule")
+          if re.search(r"(?m)^First Public Publication:", license_text) or re.search(
+              r"(?m)^Change Date:\s*\d{4}-\d{2}-\d{2}\s*$", license_text
+          ):
+              raise SystemExit("LICENSE contains obsolete release-specific dating")
+      - name: Create and push one immutable SSH-signed annotated tag
+        shell: bash
+        env:
+          RELEASE_SSH_PRIVATE_KEY: ${{ secrets.FORGEPORT_RELEASE_SSH_PRIVATE_KEY }}
+          SOURCE_COMMIT: ${{ steps.validate.outputs.sha }}
+          TAG: ${{ steps.validate.outputs.tag }}
+          TRUST_FILE: ${{ steps.validate.outputs.trust_path }}
+        run: |
+          set -euo pipefail
+          key_file="$RUNNER_TEMP/forgeport-release-ed25519"
+          cleanup() { rm -f -- "$key_file" "$key_file.pub"; }
+          trap cleanup EXIT
+          test -n "$RELEASE_SSH_PRIVATE_KEY" || { echo "Release signing secret is unavailable"; exit 1; }
+          umask 077
+          printf '%s\n' "$RELEASE_SSH_PRIVATE_KEY" > "$key_file"
+          derived_public="$(ssh-keygen -y -f "$key_file")"
+          trusted_public="$(awk '$1 == "forgeport-release" {for (i=2; i<=NF; i++) if ($i == "ssh-ed25519") {print $i " " $(i+1); exit}}' "$TRUST_FILE")"
+          test -n "$trusted_public" && test "$derived_public" = "$trusted_public" || {
+            echo "Release private key does not match central public trust"
+            exit 1
+          }
+          if git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null 2>&1; then
+            echo "Release tag already exists and must never be rewritten"
+            exit 1
+          fi
+          git config --local user.name "ForgePort Release"
+          git config --local user.email "n35k3nd1r@users.noreply.github.com"
+          git config --local gpg.format ssh
+          git config --local user.signingkey "$key_file"
+          git tag --sign --annotate "$TAG" "$SOURCE_COMMIT" --message "ForgePort $TAG"
+          git config --local gpg.ssh.allowedSignersFile "$TRUST_FILE"
+          LC_ALL=C git verify-tag "$TAG" 2>&1 | tee "$RUNNER_TEMP/verify-created-tag.txt"
+          grep -F 'Good "git" signature for forgeport-release' "$RUNNER_TEMP/verify-created-tag.txt"
+          git push origin "refs/tags/$TAG:refs/tags/$TAG"

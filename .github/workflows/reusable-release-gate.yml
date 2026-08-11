@@ -33,7 +33,72 @@ jobs:
           ):
               raise SystemExit("release requires refs/tags/vMAJOR.MINOR.PATCH")
       - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # main 2026-08-11
-        with: { persist-credentials: false }
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - id: release-trust
+        name: Load immutable central release-tag trust
+        shell: python
+        env:
+          CENTRAL_WORKFLOW: reusable-release-gate.yml
+          GH_TOKEN: ${{ github.token }}
+          WORKFLOW_REF: ${{ job.workflow_ref }}
+          WORKFLOW_SHA: ${{ job.workflow_sha }}
+        run: |
+          import base64, json, os, pathlib, re, urllib.request
+
+          pattern = (
+              r"ForgePort/\.github/\.github/workflows/"
+              + re.escape(os.environ["CENTRAL_WORKFLOW"])
+              + r"@([0-9a-f]{40})"
+          )
+          match = re.fullmatch(pattern, os.environ["WORKFLOW_REF"])
+          if not match:
+              raise SystemExit("reusable workflow must be called by an immutable central commit SHA")
+          central_sha = match.group(1)
+          if central_sha != os.environ["WORKFLOW_SHA"]:
+              raise SystemExit("central workflow ref and workflow SHA differ")
+          request = urllib.request.Request(
+              "https://api.github.com/repos/ForgePort/.github/contents/"
+              f"release-trust/allowed_signers?ref={central_sha}",
+              headers={
+                  "Accept": "application/vnd.github+json",
+                  "Authorization": f"Bearer {os.environ['GH_TOKEN']}",
+                  "X-GitHub-Api-Version": "2022-11-28",
+              },
+          )
+          with urllib.request.urlopen(request) as response:
+              document = json.load(response)
+          if document.get("type") != "file" or document.get("encoding") != "base64":
+              raise SystemExit("central release trust is not a regular base64-encoded file")
+          trust = base64.b64decode("".join(document.get("content", "").split()), validate=True)
+          text = trust.decode("utf-8")
+          active = [line for line in text.splitlines() if line.strip() and not line.lstrip().startswith("#")]
+          if len(active) != 1:
+              raise SystemExit("central release trust must contain exactly one active signer")
+          fields = active[0].split()
+          if not fields or fields[0] != "forgeport-release" or fields.count("ssh-ed25519") != 1:
+              raise SystemExit("central release trust must authorize forgeport-release with Ed25519")
+          trust_path = pathlib.Path(os.environ["RUNNER_TEMP"]) / "forgeport-release-allowed-signers"
+          trust_path.write_bytes(trust)
+          with pathlib.Path(os.environ["GITHUB_OUTPUT"]).open("a", encoding="utf-8") as output:
+              output.write(f"path={trust_path}\n")
+              output.write(f"central_sha={central_sha}\n")
+      - name: Verify SSH-signed annotated release tag
+        shell: bash
+        env:
+          TAG: ${{ github.ref_name }}
+          TRUST_FILE: ${{ steps.release-trust.outputs.path }}
+        run: |
+          set -euo pipefail
+          test "$(git cat-file -t "refs/tags/$TAG")" = tag || {
+            echo "Release tag must be annotated and SSH-signed"
+            exit 1
+          }
+          git config --local gpg.format ssh
+          git config --local gpg.ssh.allowedSignersFile "$TRUST_FILE"
+          LC_ALL=C git verify-tag "$TAG" 2>&1 | tee "$RUNNER_TEMP/verify-tag.txt"
+          grep -F 'Good "git" signature for forgeport-release' "$RUNNER_TEMP/verify-tag.txt"
       - name: Validate isolated artifact destination
         shell: python
         env:
@@ -110,14 +175,18 @@ jobs:
           with urllib.request.urlopen(request) as response:
               ref = json.load(response)
           target = ref["object"]
-          if target["type"] == "tag":
-              request = urllib.request.Request(
-                  f"https://api.github.com/repos/{os.environ['REPOSITORY']}/git/tags/{target['sha']}",
-                  headers=headers,
-              )
-              with urllib.request.urlopen(request) as response:
-                  tag_object = json.load(response)
-              target = tag_object["object"]
+          if target["type"] != "tag":
+              raise SystemExit("release tag must be an annotated signed tag object")
+          request = urllib.request.Request(
+              f"https://api.github.com/repos/{os.environ['REPOSITORY']}/git/tags/{target['sha']}",
+              headers=headers,
+          )
+          with urllib.request.urlopen(request) as response:
+              tag_object = json.load(response)
+          verification = tag_object.get("verification", {})
+          if not verification.get("verified") or verification.get("reason") != "valid":
+              raise SystemExit("GitHub does not report a valid verified release-tag signature")
+          target = tag_object["object"]
           if target["type"] != "commit" or target["sha"] != os.environ["SOURCE_SHA"]:
               raise SystemExit("release tag does not resolve to the checked-out commit")
 
@@ -154,5 +223,7 @@ jobs:
           external = build_definition.get("externalParameters", {})
           if external.get("revision") != os.environ["SOURCE_SHA"]:
               raise SystemExit("provenance revision differs from tagged commit")
+          if external.get("tag") != tag:
+              raise SystemExit("provenance tag differs from release tag")
           if not provenance.get("runDetails", {}).get("builder", {}).get("id"):
               raise SystemExit("provenance builder identity is missing")
