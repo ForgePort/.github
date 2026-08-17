@@ -107,7 +107,7 @@ jobs:
         run: |
           printf 'sha256=%s\n' "$(sha256sum "$LICENSE_PATH" | cut -d ' ' -f 1)" >> "$GITHUB_OUTPUT"
       - uses: docker/setup-buildx-action@5b9cf3909b54a280b6df6eee035755eb1f2fd611 # main 2026-08-11
-      - uses: docker/login-action@eed250920367120910219051b8653a1d846f7f03 # main 2026-08-11
+      - uses: docker/login-action@af63523ba5f55733d817da0fdb813e660152c72c # main 2026-08-11
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
