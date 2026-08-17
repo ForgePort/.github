@@ -26,7 +26,7 @@ jobs:
           distribution: temurin
           java-version: ${{ inputs.java-version }}
       - if: inputs.node-version != ''
-        uses: actions/setup-node@e51e5fe84fc33b4c73ebe40526b2694712b5b858 # main 2026-08-11
+        uses: actions/setup-node@3d7870f6218881292d183093179901ae8dc2ef85 # main 2026-08-11
         with:
           node-version: ${{ inputs.node-version }}
       - if: inputs.go-version != ''
