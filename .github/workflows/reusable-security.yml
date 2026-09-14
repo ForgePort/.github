@@ -32,7 +32,7 @@ jobs:
       - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # main 2026-08-11
         with: { persist-credentials: false }
       - name: Generate SPDX SBOM and license inventory
-        uses: anchore/sbom-action@04151451f829cb881fd7b3250eccf4021433e14e # main 2026-08-11
+        uses: anchore/sbom-action@274555f23948494da9248b45cbd44ad133002e12 # main 2026-08-11
         with:
           path: ${{ inputs.scan-path }}
           format: spdx-json
