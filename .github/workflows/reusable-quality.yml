@@ -30,7 +30,7 @@ jobs:
         with:
           node-version: ${{ inputs.node-version }}
       - if: inputs.go-version != ''
-        uses: actions/setup-go@5064d95ba18d4a9dda7c4cc67adeb03aea1a2a14 # main 2026-08-11
+        uses: actions/setup-go@34829cb9acb0c3aab260216f67d0867cc080dca5 # main 2026-08-11
         with:
           go-version: ${{ inputs.go-version }}
           cache: true
