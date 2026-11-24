@@ -388,7 +388,7 @@ jobs:
             org.forgeport.build-artifact.archive-digest=${{ steps.artifact-evidence.outputs.archive_digest }}
             org.forgeport.build-artifact.content-sha256=${{ steps.artifact-evidence.outputs.content_sha256 }}
       - id: build
-        uses: docker/build-push-action@2ca78c6bec76527009825f31aae0532b4d40d820 # main 2026-08-11
+        uses: docker/build-push-action@91670ba5a4df99a24efff8637a78c83fd1b0f6b1 # main 2026-08-11
         with:
           context: ${{ inputs.context }}
           file: ${{ inputs.containerfile }}
