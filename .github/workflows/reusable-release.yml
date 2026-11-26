@@ -253,7 +253,7 @@ jobs:
           checksum_tmp="$(mktemp)"
           find "$ROOT" -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum > "$checksum_tmp"
           mv "$checksum_tmp" "$ROOT/SHA256SUMS"
-      - uses: sigstore/cosign-installer@874852de93c66509b01dc7cd80f7a5385182d017 # main 2026-08-11
+      - uses: sigstore/cosign-installer@828df1e55de306ba29db814d6057ddae71883cda # main 2026-08-11
       - name: Sign release checksums
         shell: bash
         env:
