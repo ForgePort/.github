@@ -18,7 +18,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Scan checked-out files for secrets
-        uses: aquasecurity/trivy-action@2736533278103862a861f4a35ebac3e97854d956 # main 2026-08-11
+        uses: aquasecurity/trivy-action@d2a0b60797ff03db6132bd4e2b293f9b37081297 # main 2026-08-11
         with:
           scan-type: fs
           scan-ref: ${{ inputs.scan-path }}
@@ -50,7 +50,7 @@ jobs:
             exit 1
           fi
       - name: Vulnerability scan
-        uses: aquasecurity/trivy-action@2736533278103862a861f4a35ebac3e97854d956 # main 2026-08-11
+        uses: aquasecurity/trivy-action@d2a0b60797ff03db6132bd4e2b293f9b37081297 # main 2026-08-11
         with:
           scan-type: fs
           scan-ref: ${{ inputs.scan-path }}
